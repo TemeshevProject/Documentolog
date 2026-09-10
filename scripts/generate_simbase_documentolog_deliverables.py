@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate Word TZ and executive PowerPoint for SimBASE ↔ Documentolog integration."""
 
+import shutil
 from datetime import date
 from pathlib import Path
 
@@ -15,6 +16,15 @@ from pptx.util import Inches, Pt as PptPt
 OUT_DIR = Path("/workspace/deliverables")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 TODAY = date(2026, 9, 10).strftime("%d.%m.%Y")
+
+# Sergek Group brandbook (Google Drive)
+BRAND_SLIDE_TEMPLATE = Path(
+    "/workspace/brandbook/Obshchie_slaidy_ver_12.12.24.pptx"
+)
+# Primary: #013D85, dark #1C3341, light #D4D8E4 (Sergek Group guidelines)
+LAYOUT_TITLE_WHITE = 7  # Заголовок и два столбца_белый
+LAYOUT_CONTENT_WHITE = 10  # Один столбец_белый 1
+LAYOUT_DARK_TITLE = 0  # Слайд ТЕМНО СЕРЫЙ ФОН
 
 
 def set_doc_styles(doc: Document) -> None:
@@ -359,111 +369,165 @@ def add_slide_two_column(prs: Presentation, title: str, left_title: str, left: l
     add_slide_two_column_col(Inches(5.0), Inches(1.2), Inches(4.3), Inches(5.5), right_title, right)
 
 
+def delete_slide(prs: Presentation, index: int) -> None:
+    slide_id = prs.slides._sldIdLst[index]
+    rId = slide_id.rId
+    prs.part.drop_rel(rId)
+    del prs.slides._sldIdLst[index]
+
+
+def _find_body_placeholder(slide):
+    for sh in slide.placeholders:
+        if sh.placeholder_format.type == 2:  # BODY
+            return sh
+    for sh in slide.shapes:
+        if sh.is_placeholder and sh.placeholder_format.type == 2:
+            return sh
+    return None
+
+
+def _set_content_slide(slide, title: str, bullets: list[str], levels: list[int] | None = None) -> None:
+    if slide.shapes.title:
+        slide.shapes.title.text = title
+    body = _find_body_placeholder(slide)
+    if body is None:
+        return
+    tf = body.text_frame
+    tf.clear()
+    levels = levels or [0] * len(bullets)
+    for i, (text, level) in enumerate(zip(bullets, levels)):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.text = text
+        p.level = level
+
+
+def _apply_title_variant_slide(slide, title: str, subtitle: str, date_str: str) -> None:
+    for sh in slide.shapes:
+        if not sh.has_text_frame:
+            continue
+        text = sh.text.strip()
+        if text == "Название презентации":
+            sh.text = title
+        elif text == "Дата":
+            sh.text = date_str
+        elif "Выберите титулку" in text:
+            sh.text = subtitle
+
+
 def build_ppt() -> Path:
-    prs = Presentation()
-    prs.slide_width = Inches(10)
-    prs.slide_height = Inches(7.5)
+    out = OUT_DIR / "Prezentaciya_SimBASE_Documentolog_dlya_rukovodstva.pptx"
+    if not BRAND_SLIDE_TEMPLATE.exists():
+        raise FileNotFoundError(
+            f"Шаблон брендбука не найден: {BRAND_SLIDE_TEMPLATE}. "
+            "Скачайте папку с Google Drive в /workspace/brandbook."
+        )
 
-    add_slide_title(
-        prs,
+    shutil.copy(BRAND_SLIDE_TEMPLATE, out)
+    prs = Presentation(out)
+
+    # Оставляем только титульный слайд (вариант 1 — белый), убираем демо-слайды шаблона.
+    for idx in range(len(prs.slides) - 1, 0, -1):
+        delete_slide(prs, idx)
+
+    _apply_title_variant_slide(
+        prs.slides[0],
         "Интеграция SimBASE и Documentolog",
-        f"Единый процесс входящей и исходящей корреспонденции\n{TODAY}",
+        "Единый процесс входящей и исходящей корреспонденции",
+        TODAY,
     )
 
-    add_slide_bullets(
-        prs,
-        "Зачем это нужно?",
-        [
-            "Сегодня сотрудники ведут одно письмо в двух системах: SimBASE и Documentolog.",
-            "SimBASE — вся внутренняя работа; Documentolog — единственный канал к внешнему миру (ЕСЭДО, КЦОЭД).",
-            "Из-за отсутствия шлюза ЕСЭДО в SimBASE внешняя переписка «застряла» в Documentolog.",
-            "Повторное согласование и регистрация отнимают время и создают ошибки.",
-        ],
-    )
+    slides_content: list[tuple[str, list[str], list[int] | None]] = [
+        (
+            "Зачем это нужно?",
+            [
+                "Сегодня сотрудники ведут одно письмо в двух системах: SimBASE и Documentolog.",
+                "SimBASE — внутренняя работа; Documentolog — канал к внешнему миру (ЕСЭДО, КЦОЭД).",
+                "В SimBASE нет шлюза ЕСЭДО — внешняя переписка ведётся в Documentolog.",
+                "Повторное согласование и регистрация отнимают время и создают ошибки.",
+            ],
+            None,
+        ),
+        (
+            "Как работает сейчас (AS-IS)",
+            [
+                "Исходящее: SimBASE → вручную Documentolog → снова согласование → отправка.",
+                "Входящее: Documentolog → регистрация → вручную SimBASE → согласование.",
+                "Постоянное переключение между системами.",
+                "Нет единой картины статуса и ответственного.",
+            ],
+            None,
+        ),
+        (
+            "Что предлагаем (TO-BE)",
+            [
+                "SimBASE — единое рабочее место по входящей и исходящей корреспонденции.",
+                "Documentolog — backend обмена с госорганами и контрагентами.",
+                "Входящие: «Запросить» → импорт в SimBASE → один БП.",
+                "Исходящие: цикл в SimBASE → «Отправить» → Documentolog во внешку.",
+            ],
+            None,
+        ),
+        (
+            "Что это даст организации",
+            [
+                "Эффект для бизнеса",
+                "Меньше ручного труда делопроизводства",
+                "Быстрее прохождение писем",
+                "Меньше ошибок при переносе файлов и реквизитов",
+                "Прозрачный контроль статусов в одной системе",
+                "Сотрудники не заходят в Documentolog в рутине",
+                "Что не меняется",
+                "33 лицензии Documentolog — транспортный слой",
+                "Юридическая значимость и ЕСЭДО — через Documentolog",
+                "Внутренние процессы SimBASE — без изменений",
+            ],
+            [0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
+        ),
+        (
+            "Ключевые сценарии",
+            [
+                "Входящее: Documentolog → «Запросить» → регистрация и маршрут в SimBASE.",
+                "Исходящее: согласование в SimBASE → «Отправить через Documentolog».",
+                "Повторное согласование в Documentolog исключается.",
+            ],
+            None,
+        ),
+        (
+            "Риски и как их снимаем",
+            [
+                "API Documentolog для входящих и ЕСЭДО — workshop с вендором на старте.",
+                "Двойные номера — учётный номер в SimBASE.",
+                "ЭЦП — по возможности из SimBASE (iframe/API).",
+                "Пилот перед отключением рутинного UI Documentolog.",
+            ],
+            None,
+        ),
+        (
+            "Этапы и решение для руководства",
+            [
+                "Обследование + согласование API с Documentolog.",
+                "Проектирование, интеграция, два БП в SimBASE.",
+                "Пилот с делопроизводством и офис-менеджментом.",
+                "Решение: утвердить TO-BE, владелец процесса, рабочая группа (ИТ, канцелярия, вендоры).",
+            ],
+            None,
+        ),
+    ]
 
-    add_slide_bullets(
-        prs,
-        "Как работает сейчас (AS-IS)",
-        [
-            "Исходящее: согласовали в SimBASE → вручную в Documentolog → снова согласование → отправка.",
-            "Входящее: пришло в Documentolog → регистрация → вручную в SimBASE → снова согласование.",
-            "Офис-менеджеры и инициаторы постоянно переключаются между системами.",
-            "Нет единой картины: где письмо, на каком этапе, кто ответственный.",
-        ],
-    )
+    for title, bullets, levels in slides_content:
+        slide = prs.slides.add_slide(prs.slide_layouts[LAYOUT_CONTENT_WHITE])
+        _set_content_slide(slide, title, bullets, levels)
 
-    add_slide_bullets(
-        prs,
-        "Что предлагаем (TO-BE)",
-        [
-            "SimBASE — единое рабочее место для всех по входящей и исходящей корреспонденции.",
-            "Documentolog остаётся: это «двигатель» обмена с госорганами и контрагентами.",
-            "Входящие: кнопка «Запросить» → письма попадают в SimBASE → один регламентный БП.",
-            "Исходящие: полный цикл в SimBASE → кнопка «Отправить» → Documentolog уходит во внешку.",
-        ],
-    )
-
-    add_slide_two_column(
-        prs,
-        "Что это даст организации",
-        "Эффект для бизнеса",
-        [
-            "Меньше ручного труда делопроизводства",
-            "Быстрее прохождение писем",
-            "Меньше ошибок при переносе файлов и реквизитов",
-            "Прозрачный контроль статусов в одной системе",
-            "Сотрудники не заходят в Documentolog в рутине",
-        ],
-        "Что не меняется",
-        [
-            "33 лицензии Documentolog — используем как транспорт",
-            "Юридическая значимость и ЕСЭДО — через Documentolog",
-            "Внутренние процессы SimBASE — без изменений",
-            "Отказ от Documentolog не требуется",
-        ],
-    )
-
-    add_slide_bullets(
-        prs,
-        "Ключевые сценарии",
-        [
-            "Входящее: Documentolog принял письмо → офис-менеджер «Запросить» → регистрация и маршрут в SimBASE.",
-            "Исходящее: согласование и подписание в SimBASE → «Отправить через Documentolog» → мониторинг статуса.",
-            "Повторное согласование в Documentolog исключается по дизайну.",
-        ],
-    )
-
-    add_slide_bullets(
-        prs,
-        "Риски и как их снимаем",
-        [
-            "API Documentolog для входящих и ЕСЭДО — согласуем на старте с вендором (workshop).",
-            "Двойные номера — учётный номер в SimBASE, Documentolog только для транспорта.",
-            "Подписание ЭЦП — по возможности из SimBASE (iframe/API), без второго маршрута.",
-            "Пилот на ограниченном потоке перед полным отключением рутинного UI Documentolog.",
-        ],
-    )
-
-    add_slide_bullets(
-        prs,
-        "Этапы и решение для руководства",
-        [
-            "Этап 0–1: обследование + согласование API с Documentolog (2–4 недели — уточнить с исполнителем).",
-            "Этап 2–4: проектирование, разработка интеграции, настройка двух БП в SimBASE.",
-            "Этап 5: пилот с делопроизводством и офис-менеджментом.",
-            "Решение: утвердить концепцию TO-BE, назначить владельца процесса и выделить рабочую группу (ИТ, канцелярия, Documentolog, SimBASE).",
-        ],
-    )
-
-    add_slide_title(
-        prs,
+    closing = prs.slides.add_slide(prs.slide_layouts[LAYOUT_DARK_TITLE])
+    _apply_title_variant_slide(
+        closing,
         "Итог",
         "Одна система для людей — SimBASE.\n"
         "Один канал во внешний мир — Documentolog.\n"
         "Один раз согласуем — один раз отправим.",
+        TODAY,
     )
 
-    out = OUT_DIR / "Prezentaciya_SimBASE_Documentolog_dlya_rukovodstva.pptx"
     prs.save(out)
     return out
 
